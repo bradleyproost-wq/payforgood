@@ -13,7 +13,7 @@
     "@prisma/client": "6.14.0",
     "bcryptjs": "3.0.2",
     "jose": "6.0.12",
-    "next": "15.4.6",
+    "next": "15.4.10",
     "prisma": "6.14.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -30,5 +30,8 @@
   "engines": {
     "node": ">=22.12.0",
     "npm": ">=10"
+  },
+  "overrides": {
+    "next": "15.4.10"
   }
 }
