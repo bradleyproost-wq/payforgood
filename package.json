@@ -1,10 +1,1 @@
-{
-  "name":"moneyflow-github-ready",
-  "version":"1.0.0",
-  "description":"MoneyFlow personal finance app ready for GitHub and Railway",
-  "main":"server.js",
-  "scripts":{"start":"node server.js","dev":"nodemon server.js"},
-  "engines":{"node":">=18"},
-  "dependencies":{"bcryptjs":"^2.4.3","better-sqlite3":"^11.9.1","connect-sqlite3":"^0.9.15","express":"^4.21.2","express-session":"^1.18.1","multer":"^1.4.5-lts.1"},
-  "devDependencies":{"nodemon":"^3.1.9"}
-}
+{"name":"moneyflow-pro","version":"1.0.0","private":true,"scripts":{"dev":"next dev","build":"prisma generate && next build","start":"next start -p ${PORT:-3000}","postinstall":"prisma generate","db:push":"prisma db push"},"dependencies":{"@prisma/client":"latest","bcryptjs":"latest","jose":"latest","next":"latest","prisma":"latest","react":"latest","react-dom":"latest","recharts":"latest","zod":"latest"},"devDependencies":{"@types/bcryptjs":"latest","@types/node":"latest","@types/react":"latest","@types/react-dom":"latest","typescript":"latest"}}

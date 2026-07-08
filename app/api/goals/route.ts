@@ -1,0 +1,1 @@
+import {NextResponse} from 'next/server';import {requireUser} from '@/lib/auth';import {prisma} from '@/lib/db';export async function POST(req:Request){const u=await requireUser();const b=await req.json();await prisma.goal.create({data:{userId:u.id,name:b.name||'Goal',target:Number(b.target||0),current:Number(b.current||0)}});return NextResponse.json({ok:true})}

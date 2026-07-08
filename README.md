@@ -1,37 +1,50 @@
-# MoneyFlow
+# MoneyFlow Pro — GitHub + Railway Ready
 
-เว็บแอพจัดการเงินส่วนตัว พร้อมอัปขึ้น GitHub และ Deploy บน Railway ได้เลย
+เว็บแอปจัดการเงินส่วนตัวแบบพร้อม Deploy บน Railway
 
 ## Features
-- Register / Login
+- สมัครสมาชิก / Login ด้วย JWT Cookie
 - Dashboard
-- Money Split Plans
-- Accounts + QR Upload
-- Transfer Workflow
-- History
-- Monthly Budget
+- แบ่งเงินตามเปอร์เซ็นต์
+- Accounts หลายบัญชี + QR URL
+- History การแบ่งเงิน
+- Budget รายเดือน
 - Goals
 - Debt Tracker
-- Recurring Income/Expense
-- Net Worth + Financial Score
-- PWA installable app
+- Recurring income/expense
+- Net Worth
+- Financial Health Score
 - Backup JSON
+- PWA manifest
+- PostgreSQL + Prisma
 
-## Run locally
+## Deploy on Railway
+1. แตก ZIP แล้วอัปไฟล์ทั้งหมดขึ้น GitHub
+2. Railway → New Project → Deploy from GitHub
+3. Add PostgreSQL บน Railway
+4. ตั้ง Variables:
+
+```env
+DATABASE_URL=เอาจาก Railway PostgreSQL
+JWT_SECRET=ใส่รหัสยาวๆสุ่มเอง
+NEXT_PUBLIC_APP_NAME=MoneyFlow Pro
+NODE_ENV=production
+```
+
+5. Deploy
+
+Railway จะรัน:
+```bash
+npm run db:push && npm start
+```
+
+## Local dev
 ```bash
 npm install
 cp .env.example .env
-npm start
+npm run db:push
+npm run dev
 ```
-Open `http://localhost:3000`
 
-## Deploy Railway
-1. Upload this folder to GitHub
-2. Railway > New Project > Deploy from GitHub
-3. Add Variables:
-```bash
-SESSION_SECRET=your-long-secret
-APP_NAME=MoneyFlow
-NODE_ENV=production
-```
-4. Deploy
+## หมายเหตุ
+เวอร์ชันนี้เป็น V1 ที่ใช้งานจริงได้และขยายต่อได้ ไม่ใช่ตัวอย่างหน้าเดียว

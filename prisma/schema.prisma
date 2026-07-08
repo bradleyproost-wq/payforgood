@@ -1,0 +1,11 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql" url = env("DATABASE_URL") }
+model User { id String @id @default(cuid()) name String email String @unique password String createdAt DateTime @default(now()) accounts Account[] plans Plan[] splits Split[] budgets Budget[] goals Goal[] debts Debt[] recurring Recurring[] assets Asset[] }
+model Account { id String @id @default(cuid()) userId String name String type String @default("bank") balance Float @default(0) qrUrl String? createdAt DateTime @default(now()) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Plan { id String @id @default(cuid()) userId String name String items Json createdAt DateTime @default(now()) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Split { id String @id @default(cuid()) userId String planName String amount Float items Json status String @default("pending") createdAt DateTime @default(now()) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Budget { id String @id @default(cuid()) userId String month String category String limit Float spent Float @default(0) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Goal { id String @id @default(cuid()) userId String name String target Float current Float @default(0) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Debt { id String @id @default(cuid()) userId String name String total Float paid Float @default(0) minPayment Float @default(0) user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Recurring { id String @id @default(cuid()) userId String name String kind String amount Float frequency String day Int? user User @relation(fields:[userId],references:[id],onDelete:Cascade) }
+model Asset { id String @id @default(cuid()) userId String name String kind String value Float user User @relation(fields:[userId],references:[id],onDelete:Cascade) }

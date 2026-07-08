@@ -1,0 +1,3 @@
+import Link from 'next/link';
+import { getUser } from '@/lib/auth';
+export default async function Home(){const user=await getUser();return <><div className="nav"><div className="brand">MoneyFlow Pro</div><div>{user?<Link className="btn" href="/dashboard">Dashboard</Link>:<Link className="btn" href="/login">Login / สมัคร</Link>}</div></div><section className="hero"><h1>เงินเข้า 1 ครั้ง วางแผนได้ทั้งชีวิต</h1><p className="muted">แบ่งเงินตาม %, Accounts + QR, Budget, Goals, Debt, Net Worth, Financial Score และ PWA พร้อมลง Railway</p><p><Link className="btn" href={user?'/dashboard':'/login'}>เริ่มใช้งาน</Link></p></section></>}
