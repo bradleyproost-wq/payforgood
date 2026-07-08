@@ -1,68 +1,67 @@
 const express = require('express');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
-const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
+const Database = require('better-sqlite3');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const APP_NAME = process.env.APP_NAME || 'MoneyFlow';
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PORT = process.env.PORT || 8080;
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-const db = new Database(path.join(DATA_DIR, 'moneyflow.sqlite'));
 
+const db = new Database(path.join(DATA_DIR, 'moneyflow.db'));
+db.pragma('journal_mode = WAL');
 db.exec(`
-CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,email TEXT UNIQUE,password_hash TEXT,pin_hash TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS plans(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,name TEXT,items TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS accounts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,name TEXT,type TEXT,balance REAL DEFAULT 0,qr_path TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS splits(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,plan_id INTEGER,amount REAL,results TEXT,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,month TEXT,category TEXT,limit_amount REAL,spent REAL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,name TEXT,target REAL,current REAL DEFAULT 0,deadline TEXT);
-CREATE TABLE IF NOT EXISTS debts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,name TEXT,total REAL,paid REAL DEFAULT 0,due_date TEXT);
-CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,title TEXT,type TEXT,amount REAL,day INTEGER,active INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,pin TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS plans(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,items TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS accounts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,type TEXT DEFAULT 'bank',balance REAL DEFAULT 0,qr_path TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS splits(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,plan_name TEXT,amount REAL NOT NULL,items TEXT NOT NULL,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,month TEXT NOT NULL,category TEXT NOT NULL,limit_amount REAL NOT NULL,spent REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,target REAL NOT NULL,current REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS debts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,total REAL NOT NULL,paid REAL DEFAULT 0,min_payment REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,amount REAL NOT NULL,frequency TEXT DEFAULT 'monthly',day INTEGER);
+CREATE TABLE IF NOT EXISTS assets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,kind TEXT DEFAULT 'asset',value REAL NOT NULL);
 `);
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit:'10mb' }));
+app.use(express.json({ limit:'10mb' }));
+app.use(session({ store: new SQLiteStore({ db:'sessions.sqlite', dir:DATA_DIR }), secret: process.env.SESSION_SECRET || 'dev-secret-change-me', resave:false, saveUninitialized:false, cookie:{ maxAge: 1000*60*60*24*30, sameSite:'lax' }}));
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(session({ store: new SQLiteStore({ db: 'sessions.sqlite', dir: DATA_DIR }), secret: process.env.SESSION_SECRET || 'dev-secret-change-me', resave: false, saveUninitialized: false, cookie: { maxAge: 1000*60*60*24*30 } }));
+const upload = multer({ dest: UPLOAD_DIR, limits:{ fileSize: 5*1024*1024 }, fileFilter:(req,file,cb)=> cb(null, ['image/png','image/jpeg','image/webp'].includes(file.mimetype)) });
 
-const storage = multer.diskStorage({ destination: UPLOAD_DIR, filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.round(Math.random()*1e9)}${path.extname(file.originalname)}`) });
-const upload = multer({ storage, limits: { fileSize: 3*1024*1024 }, fileFilter: (req, file, cb) => cb(null, ['image/png','image/jpeg','image/webp'].includes(file.mimetype)) });
+function user(req){ return req.session.user || null; }
+function auth(req,res,next){ if(!user(req)) return res.status(401).json({error:'login_required'}); next(); }
+function uid(req){ return req.session.user.id; }
+function one(sql,...p){ return db.prepare(sql).get(...p); }
+function all(sql,...p){ return db.prepare(sql).all(...p); }
+function run(sql,...p){ return db.prepare(sql).run(...p); }
+function parseItems(v){ try{return JSON.parse(v||'[]')}catch{return[]} }
 
-function requireAuth(req,res,next){ if(!req.session.userId) return res.redirect('/login'); next(); }
-function money(n){ return Number(n||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function layout(req, title, body){ const user=req.session.userName; return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111827"><link rel="manifest" href="/manifest.json"><link rel="stylesheet" href="/style.css"><title>${title} | ${APP_NAME}</title></head><body><nav><b>${APP_NAME}</b>${user?`<span>${user}</span><a href="/">Dashboard</a><a href="/split">Split</a><a href="/accounts">Accounts</a><a href="/budgets">Budget</a><a href="/goals">Goals</a><a href="/debts">Debt</a><a href="/backup">Backup</a><a href="/logout">Logout</a>`:''}</nav><main>${body}</main><script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js')</script></body></html>`; }
+app.get('/api/me',(req,res)=>res.json({user:user(req)}));
+app.post('/api/register',(req,res)=>{ const {name,email,password}=req.body; if(!name||!email||!password) return res.status(400).json({error:'กรอกข้อมูลไม่ครบ'}); try{ const hash=bcrypt.hashSync(password,10); const info=run('INSERT INTO users(name,email,password) VALUES(?,?,?)',name,email.toLowerCase(),hash); req.session.user={id:info.lastInsertRowid,name,email:email.toLowerCase()}; const items=[{name:'ลงทุน',percent:40,accountId:null},{name:'หนี้',percent:30,accountId:null},{name:'เงินเก็บ',percent:20,accountId:null},{name:'ใช้ส่วนตัว',percent:10,accountId:null}]; run('INSERT INTO plans(user_id,name,items) VALUES(?,?,?)',info.lastInsertRowid,'แผนหลัก 40/30/20/10',JSON.stringify(items)); res.json({ok:true,user:req.session.user}); }catch(e){res.status(400).json({error:'อีเมลนี้ถูกใช้แล้ว'});} });
+app.post('/api/login',(req,res)=>{ const {email,password}=req.body; const u=one('SELECT * FROM users WHERE email=?',(email||'').toLowerCase()); if(!u||!bcrypt.compareSync(password||'',u.password)) return res.status(400).json({error:'อีเมลหรือรหัสผ่านผิด'}); req.session.user={id:u.id,name:u.name,email:u.email}; res.json({ok:true,user:req.session.user}); });
+app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
 
-app.get('/register',(req,res)=>res.send(layout(req,'Register',`<section class="card"><h1>สมัครสมาชิก</h1><form method="post"><input name="name" placeholder="ชื่อ" required><input name="email" type="email" placeholder="อีเมล" required><input name="password" type="password" placeholder="รหัสผ่าน" required><button>สมัคร</button></form><p><a href="/login">มีบัญชีแล้ว Login</a></p></section>`)));
-app.post('/register',(req,res)=>{ const {name,email,password}=req.body; try{ const hash=bcrypt.hashSync(password,10); const r=db.prepare('INSERT INTO users(name,email,password_hash) VALUES(?,?,?)').run(name,email,hash); req.session.userId=r.lastInsertRowid; req.session.userName=name; res.redirect('/'); }catch(e){res.send(layout(req,'Error',`<div class="card"><h2>อีเมลนี้ถูกใช้แล้ว</h2><a href="/register">กลับ</a></div>`));}});
-app.get('/login',(req,res)=>res.send(layout(req,'Login',`<section class="card"><h1>Login</h1><form method="post"><input name="email" type="email" placeholder="อีเมล" required><input name="password" type="password" placeholder="รหัสผ่าน" required><button>เข้าสู่ระบบ</button></form><p><a href="/register">สมัครสมาชิก</a></p></section>`)));
-app.post('/login',(req,res)=>{ const u=db.prepare('SELECT * FROM users WHERE email=?').get(req.body.email); if(!u||!bcrypt.compareSync(req.body.password,u.password_hash)) return res.send(layout(req,'Error',`<div class="card"><h2>Login ไม่สำเร็จ</h2><a href="/login">กลับ</a></div>`)); req.session.userId=u.id; req.session.userName=u.name; res.redirect('/'); });
-app.get('/logout',(req,res)=>req.session.destroy(()=>res.redirect('/login')));
+app.get('/api/data',auth,(req,res)=>{ const id=uid(req); const accounts=all('SELECT * FROM accounts WHERE user_id=? ORDER BY id DESC',id); const plans=all('SELECT * FROM plans WHERE user_id=? ORDER BY id DESC',id).map(p=>({...p,items:parseItems(p.items)})); const splits=all('SELECT * FROM splits WHERE user_id=? ORDER BY id DESC LIMIT 100',id).map(s=>({...s,items:parseItems(s.items)})); const budgets=all('SELECT * FROM budgets WHERE user_id=? ORDER BY id DESC',id); const goals=all('SELECT * FROM goals WHERE user_id=? ORDER BY id DESC',id); const debts=all('SELECT * FROM debts WHERE user_id=? ORDER BY id DESC',id); const recurring=all('SELECT * FROM recurring WHERE user_id=? ORDER BY id DESC',id); const assets=all('SELECT * FROM assets WHERE user_id=? ORDER BY id DESC',id); const cash=accounts.reduce((a,b)=>a+Number(b.balance||0),0); const assetTotal=assets.reduce((a,b)=>a+Number(b.value||0),0)+cash; const debtLeft=debts.reduce((a,b)=>a+Math.max(0,Number(b.total||0)-Number(b.paid||0)),0); const netWorth=assetTotal-debtLeft; const income=splits.reduce((a,b)=>a+Number(b.amount||0),0); const savingRate=income ? Math.round(((splits.flatMap(s=>s.items).filter(i=>String(i.name).includes('เก็บ')||String(i.name).includes('ลงทุน')).reduce((a,b)=>a+Number(b.amount||0),0))/income)*100) : 0; const debtRatio=assetTotal? Math.round((debtLeft/assetTotal)*100):0; const score=Math.max(0,Math.min(100,60+Math.min(20,savingRate)-Math.min(25,Math.round(debtRatio/2))+ (goals.length?5:0)+(budgets.length?5:0))); res.json({accounts,plans,splits,budgets,goals,debts,recurring,assets,summary:{cash,assetTotal,debtLeft,netWorth,income,savingRate,debtRatio,score}}); });
 
-app.get('/', requireAuth, (req,res)=>{ const uid=req.session.userId; const accounts=db.prepare('SELECT * FROM accounts WHERE user_id=?').all(uid); const debts=db.prepare('SELECT * FROM debts WHERE user_id=?').all(uid); const goals=db.prepare('SELECT * FROM goals WHERE user_id=?').all(uid); const splits=db.prepare('SELECT * FROM splits WHERE user_id=? ORDER BY id DESC LIMIT 8').all(uid); const assets=accounts.reduce((s,a)=>s+Number(a.balance||0),0)+goals.reduce((s,g)=>s+Number(g.current||0),0); const debtLeft=debts.reduce((s,d)=>s+(Number(d.total||0)-Number(d.paid||0)),0); const net=assets-debtLeft; const score=Math.max(0,Math.min(100,Math.round(60+(assets?20:0)-(debtLeft>assets?25:0)+(goals.length?10:0)+(accounts.length?10:0)))); res.send(layout(req,'Dashboard',`<h1>Dashboard</h1><div class="grid"><div class="card"><small>Assets</small><h2>${money(assets)} ฿</h2></div><div class="card"><small>Debt Left</small><h2>${money(debtLeft)} ฿</h2></div><div class="card"><small>Net Worth</small><h2>${money(net)} ฿</h2></div><div class="card"><small>Financial Score</small><h2>${score}/100</h2></div></div><section class="card"><h2>History ล่าสุด</h2>${splits.map(s=>`<div class="item"><b>${money(s.amount)} ฿</b><span>${s.created_at}</span><a href="/split/${s.id}">ดูรายการ</a></div>`).join('')||'ยังไม่มีข้อมูล'}</section>`)); });
-
-app.get('/split', requireAuth, (req,res)=>{ const uid=req.session.userId; const plans=db.prepare('SELECT * FROM plans WHERE user_id=?').all(uid); const accounts=db.prepare('SELECT * FROM accounts WHERE user_id=?').all(uid); res.send(layout(req,'Split',`<h1>แบ่งเงิน</h1><section class="card"><h2>สร้างแผน</h2><form method="post" action="/plans"><input name="name" placeholder="ชื่อแผน เช่น 40/30/20/10" required><textarea name="items" rows="5" placeholder='ลงทุน:40\nหนี้:30\nเงินเก็บ:20\nฟุ่มเฟือย:10' required></textarea><button>บันทึกแผน</button></form></section><section class="card"><h2>คำนวณ</h2><form method="post" action="/split"><input name="amount" type="number" step="0.01" placeholder="ยอดเงิน" required><select name="plan_id">${plans.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}</select><button>คำนวณและบันทึก</button></form></section><section class="card"><h2>แผนทั้งหมด</h2>${plans.map(p=>`<div class="item"><b>${p.name}</b><pre>${p.items}</pre></div>`).join('')||'ยังไม่มีแผน'}</section>`)); });
-app.post('/plans',requireAuth,(req,res)=>{ db.prepare('INSERT INTO plans(user_id,name,items) VALUES(?,?,?)').run(req.session.userId,req.body.name,req.body.items); res.redirect('/split'); });
-app.post('/split',requireAuth,(req,res)=>{ const plan=db.prepare('SELECT * FROM plans WHERE id=? AND user_id=?').get(req.body.plan_id,req.session.userId); if(!plan)return res.redirect('/split'); const amount=Number(req.body.amount); const results=plan.items.split(/\r?\n/).map(line=>{const [name,p]=line.split(':'); return {name:(name||'').trim(), percent:Number(p||0), amount:amount*Number(p||0)/100, done:false};}); db.prepare('INSERT INTO splits(user_id,plan_id,amount,results) VALUES(?,?,?,?)').run(req.session.userId,plan.id,amount,JSON.stringify(results)); res.redirect('/'); });
-app.get('/split/:id',requireAuth,(req,res)=>{ const s=db.prepare('SELECT * FROM splits WHERE id=? AND user_id=?').get(req.params.id,req.session.userId); if(!s)return res.redirect('/'); const results=JSON.parse(s.results); res.send(layout(req,'Transfer',`<h1>Transfer Workflow</h1><section class="card"><h2>ยอด ${money(s.amount)} ฿</h2>${results.map((r,i)=>`<div class="transfer ${r.done?'done':''}"><b>${r.name} ${r.percent}%</b><span>${money(r.amount)} ฿</span><form method="post" action="/split/${s.id}/toggle"><input type="hidden" name="idx" value="${i}"><button>${r.done?'ทำแล้ว':'กดเมื่อโอนแล้ว'}</button></form></div>`).join('')}</section>`)); });
-app.post('/split/:id/toggle',requireAuth,(req,res)=>{ const s=db.prepare('SELECT * FROM splits WHERE id=? AND user_id=?').get(req.params.id,req.session.userId); const results=JSON.parse(s.results); results[Number(req.body.idx)].done=!results[Number(req.body.idx)].done; db.prepare('UPDATE splits SET results=?,status=? WHERE id=?').run(JSON.stringify(results),results.every(x=>x.done)?'done':'pending',s.id); res.redirect('/split/'+s.id); });
-
-app.get('/accounts',requireAuth,(req,res)=>{ const rows=db.prepare('SELECT * FROM accounts WHERE user_id=?').all(req.session.userId); res.send(layout(req,'Accounts',`<h1>Accounts + QR</h1><section class="card"><form method="post" enctype="multipart/form-data"><input name="name" placeholder="ชื่อบัญชี" required><input name="type" placeholder="ประเภท เช่น SCB, KBank, Cash"><input name="balance" type="number" step="0.01" placeholder="ยอดเงิน"><label>QR PNG/JPG/WebP</label><input name="qr" type="file" accept="image/*"><button>เพิ่มบัญชี</button></form></section><section class="grid">${rows.map(a=>`<div class="card"><h2>${a.name}</h2><p>${a.type||''}</p><b>${money(a.balance)} ฿</b>${a.qr_path?`<img class="qr" src="${a.qr_path}">`:''}</div>`).join('')}</section>`)); });
-app.post('/accounts',requireAuth,upload.single('qr'),(req,res)=>{ db.prepare('INSERT INTO accounts(user_id,name,type,balance,qr_path) VALUES(?,?,?,?,?)').run(req.session.userId,req.body.name,req.body.type,Number(req.body.balance||0),req.file?'/uploads/'+req.file.filename:null); res.redirect('/accounts'); });
-
-function crudPage(table,title,fields){ return [ (req,res)=>{ const rows=db.prepare(`SELECT * FROM ${table} WHERE user_id=?`).all(req.session.userId); const inputs=fields.map(f=>`<input name="${f}" placeholder="${f}" ${f.includes('amount')||['target','current','total','paid','day','limit_amount','spent'].includes(f)?'type="number" step="0.01"':''}>`).join(''); res.send(layout(req,title,`<h1>${title}</h1><section class="card"><form method="post">${inputs}<button>บันทึก</button></form></section><section class="card">${rows.map(r=>`<div class="item"><b>${r.name||r.title||r.category}</b><span>${Object.entries(r).filter(([k])=>!['id','user_id'].includes(k)).map(([k,v])=>`${k}: ${v}`).join(' | ')}</span></div>`).join('')||'ยังไม่มีข้อมูล'}</section>`)); }, (req,res)=>{ const cols=['user_id',...fields]; const vals=[req.session.userId,...fields.map(f=>req.body[f]||0)]; db.prepare(`INSERT INTO ${table}(${cols.join(',')}) VALUES(${cols.map(()=>'?').join(',')})`).run(...vals); res.redirect(req.path); } ]; }
-const [budgetGet,budgetPost]=crudPage('budgets','Budget รายเดือน',['month','category','limit_amount','spent']); app.get('/budgets',requireAuth,budgetGet); app.post('/budgets',requireAuth,budgetPost);
-const [goalGet,goalPost]=crudPage('goals','Goals',['name','target','current','deadline']); app.get('/goals',requireAuth,goalGet); app.post('/goals',requireAuth,goalPost);
-const [debtGet,debtPost]=crudPage('debts','Debt Tracker',['name','total','paid','due_date']); app.get('/debts',requireAuth,debtGet); app.post('/debts',requireAuth,debtPost);
-const [recGet,recPost]=crudPage('recurring','Recurring',['title','type','amount','day']); app.get('/recurring',requireAuth,recGet); app.post('/recurring',requireAuth,recPost);
-
-app.get('/backup',requireAuth,(req,res)=>{ const uid=req.session.userId; const data={plans:db.prepare('SELECT * FROM plans WHERE user_id=?').all(uid),accounts:db.prepare('SELECT * FROM accounts WHERE user_id=?').all(uid),splits:db.prepare('SELECT * FROM splits WHERE user_id=?').all(uid),budgets:db.prepare('SELECT * FROM budgets WHERE user_id=?').all(uid),goals:db.prepare('SELECT * FROM goals WHERE user_id=?').all(uid),debts:db.prepare('SELECT * FROM debts WHERE user_id=?').all(uid),recurring:db.prepare('SELECT * FROM recurring WHERE user_id=?').all(uid)}; res.setHeader('Content-Disposition','attachment; filename="moneyflow-backup.json"'); res.json(data); });
-
-app.listen(PORT,()=>console.log(`${APP_NAME} running on port ${PORT}`));
+app.post('/api/plans',auth,(req,res)=>{ run('INSERT INTO plans(user_id,name,items) VALUES(?,?,?)',uid(req),req.body.name||'แผนใหม่',JSON.stringify(req.body.items||[])); res.json({ok:true}); });
+app.delete('/api/plans/:id',auth,(req,res)=>{ run('DELETE FROM plans WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
+app.post('/api/accounts',auth,upload.single('qr'),(req,res)=>{ const qr=req.file?('/uploads/'+req.file.filename):null; run('INSERT INTO accounts(user_id,name,type,balance,qr_path) VALUES(?,?,?,?,?)',uid(req),req.body.name,req.body.type||'bank',Number(req.body.balance||0),qr); res.json({ok:true}); });
+app.delete('/api/accounts/:id',auth,(req,res)=>{ run('DELETE FROM accounts WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
+app.post('/api/split',auth,(req,res)=>{ const amount=Number(req.body.amount||0); const items=(req.body.items||[]).map(i=>({...i,amount: Math.round(amount*Number(i.percent||0))/100})); run('INSERT INTO splits(user_id,plan_name,amount,items,status) VALUES(?,?,?,?,?)',uid(req),req.body.planName||'Manual',amount,JSON.stringify(items),'pending'); res.json({ok:true,items}); });
+app.post('/api/splits/:id/done',auth,(req,res)=>{ run('UPDATE splits SET status=? WHERE id=? AND user_id=?','done',req.params.id,uid(req)); res.json({ok:true}); });
+app.delete('/api/splits/:id',auth,(req,res)=>{ run('DELETE FROM splits WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
+for (const [route,table,fields] of [['budgets','budgets',['month','category','limit_amount','spent']],['goals','goals',['name','target','current']],['debts','debts',['name','total','paid','min_payment']],['recurring','recurring',['name','kind','amount','frequency','day']],['assets','assets',['name','kind','value']]]){
+ app.post('/api/'+route,auth,(req,res)=>{ const vals=fields.map(f=> req.body[f] ?? (f.includes('amount')||['target','current','total','paid','min_payment','value','spent','day'].includes(f)?0:'')); run(`INSERT INTO ${table}(user_id,${fields.join(',')}) VALUES(?${fields.map(()=>',?').join('')})`,uid(req),...vals); res.json({ok:true}); });
+ app.delete('/api/'+route+'/:id',auth,(req,res)=>{ run(`DELETE FROM ${table} WHERE id=? AND user_id=?`,req.params.id,uid(req)); res.json({ok:true}); });
+}
+app.get('/api/backup',auth,(req,res)=>{ const id=uid(req); res.json({accounts:all('SELECT * FROM accounts WHERE user_id=?',id),plans:all('SELECT * FROM plans WHERE user_id=?',id),splits:all('SELECT * FROM splits WHERE user_id=?',id),budgets:all('SELECT * FROM budgets WHERE user_id=?',id),goals:all('SELECT * FROM goals WHERE user_id=?',id),debts:all('SELECT * FROM debts WHERE user_id=?',id),recurring:all('SELECT * FROM recurring WHERE user_id=?',id),assets:all('SELECT * FROM assets WHERE user_id=?',id)}); });
+app.get('/health',(req,res)=>res.json({ok:true}));
+app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+app.listen(PORT,()=>console.log(`MoneyFlow ready on ${PORT}`));
