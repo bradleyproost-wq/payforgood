@@ -1,36 +1,32 @@
-# MoneyFlow Ready
+# MoneyFlow Working Final
 
-Railway-ready personal finance web app.
+Deploy ได้ทันทีบน Railway แบบไม่ต้องใช้ Database ภายนอก ใช้ไฟล์ JSON ภายใน `data/db.json`
 
-## Deploy to Railway
-1. Upload all files to GitHub repository root.
-2. Railway > New Project > Deploy from GitHub.
-3. Variables:
-```
-SESSION_SECRET=use-a-long-random-string
+## Railway
+Variables:
+```env
+SESSION_SECRET=ใส่รหัสยาวๆ
 APP_NAME=MoneyFlow
 NODE_ENV=production
-NIXPACKS_NODE_VERSION=22
 ```
-4. Deploy.
 
-## Start command
-Leave blank or use:
-```
+Start Command:
+```bash
 npm start
 ```
 
+Health check:
+`/health`
+
 ## Features
-- Register/Login
+- Register / Login
 - Dashboard
-- Split money by percent
+- Split calculator + History
 - Plans
-- Accounts + QR upload
-- History + transfer status
+- Accounts + QR URL
 - Budget
 - Goals
-- Debt tracker
-- Recurring items
-- Net worth / financial score
-- JSON Backup
-- PWA installable
+- Debt
+- Net Worth / Financial Score
+- Backup JSON
+- PWA

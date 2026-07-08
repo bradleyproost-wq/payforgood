@@ -1,67 +1,71 @@
-const express = require('express');
-const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
-const bcrypt = require('bcryptjs');
-const Database = require('better-sqlite3');
-const multer = require('multer');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-const app = express();
 const PORT = process.env.PORT || 8080;
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const ROOT = __dirname;
+const PUBLIC = path.join(ROOT, 'public');
+const DATA_DIR = path.join(ROOT, 'data');
+const DB_FILE = path.join(DATA_DIR, 'db.json');
+const SECRET = process.env.SESSION_SECRET || 'moneyflow-dev-secret-change-me';
 
-const db = new Database(path.join(DATA_DIR, 'moneyflow.db'));
-db.pragma('journal_mode = WAL');
-db.exec(`
-CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,pin TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS plans(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,items TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS accounts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,type TEXT DEFAULT 'bank',balance REAL DEFAULT 0,qr_path TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS splits(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,plan_name TEXT,amount REAL NOT NULL,items TEXT NOT NULL,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,month TEXT NOT NULL,category TEXT NOT NULL,limit_amount REAL NOT NULL,spent REAL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS goals(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,target REAL NOT NULL,current REAL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS debts(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,total REAL NOT NULL,paid REAL DEFAULT 0,min_payment REAL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS recurring(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,amount REAL NOT NULL,frequency TEXT DEFAULT 'monthly',day INTEGER);
-CREATE TABLE IF NOT EXISTS assets(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,kind TEXT DEFAULT 'asset',value REAL NOT NULL);
-`);
-
-app.use(express.urlencoded({ extended: true, limit:'10mb' }));
-app.use(express.json({ limit:'10mb' }));
-app.use(session({ store: new SQLiteStore({ db:'sessions.sqlite', dir:DATA_DIR }), secret: process.env.SESSION_SECRET || 'dev-secret-change-me', resave:false, saveUninitialized:false, cookie:{ maxAge: 1000*60*60*24*30, sameSite:'lax' }}));
-app.use('/uploads', express.static(UPLOAD_DIR));
-app.use(express.static(path.join(__dirname, 'public')));
-const upload = multer({ dest: UPLOAD_DIR, limits:{ fileSize: 5*1024*1024 }, fileFilter:(req,file,cb)=> cb(null, ['image/png','image/jpeg','image/webp'].includes(file.mimetype)) });
-
-function user(req){ return req.session.user || null; }
-function auth(req,res,next){ if(!user(req)) return res.status(401).json({error:'login_required'}); next(); }
-function uid(req){ return req.session.user.id; }
-function one(sql,...p){ return db.prepare(sql).get(...p); }
-function all(sql,...p){ return db.prepare(sql).all(...p); }
-function run(sql,...p){ return db.prepare(sql).run(...p); }
-function parseItems(v){ try{return JSON.parse(v||'[]')}catch{return[]} }
-
-app.get('/api/me',(req,res)=>res.json({user:user(req)}));
-app.post('/api/register',(req,res)=>{ const {name,email,password}=req.body; if(!name||!email||!password) return res.status(400).json({error:'กรอกข้อมูลไม่ครบ'}); try{ const hash=bcrypt.hashSync(password,10); const info=run('INSERT INTO users(name,email,password) VALUES(?,?,?)',name,email.toLowerCase(),hash); req.session.user={id:info.lastInsertRowid,name,email:email.toLowerCase()}; const items=[{name:'ลงทุน',percent:40,accountId:null},{name:'หนี้',percent:30,accountId:null},{name:'เงินเก็บ',percent:20,accountId:null},{name:'ใช้ส่วนตัว',percent:10,accountId:null}]; run('INSERT INTO plans(user_id,name,items) VALUES(?,?,?)',info.lastInsertRowid,'แผนหลัก 40/30/20/10',JSON.stringify(items)); res.json({ok:true,user:req.session.user}); }catch(e){res.status(400).json({error:'อีเมลนี้ถูกใช้แล้ว'});} });
-app.post('/api/login',(req,res)=>{ const {email,password}=req.body; const u=one('SELECT * FROM users WHERE email=?',(email||'').toLowerCase()); if(!u||!bcrypt.compareSync(password||'',u.password)) return res.status(400).json({error:'อีเมลหรือรหัสผ่านผิด'}); req.session.user={id:u.id,name:u.name,email:u.email}; res.json({ok:true,user:req.session.user}); });
-app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
-
-app.get('/api/data',auth,(req,res)=>{ const id=uid(req); const accounts=all('SELECT * FROM accounts WHERE user_id=? ORDER BY id DESC',id); const plans=all('SELECT * FROM plans WHERE user_id=? ORDER BY id DESC',id).map(p=>({...p,items:parseItems(p.items)})); const splits=all('SELECT * FROM splits WHERE user_id=? ORDER BY id DESC LIMIT 100',id).map(s=>({...s,items:parseItems(s.items)})); const budgets=all('SELECT * FROM budgets WHERE user_id=? ORDER BY id DESC',id); const goals=all('SELECT * FROM goals WHERE user_id=? ORDER BY id DESC',id); const debts=all('SELECT * FROM debts WHERE user_id=? ORDER BY id DESC',id); const recurring=all('SELECT * FROM recurring WHERE user_id=? ORDER BY id DESC',id); const assets=all('SELECT * FROM assets WHERE user_id=? ORDER BY id DESC',id); const cash=accounts.reduce((a,b)=>a+Number(b.balance||0),0); const assetTotal=assets.reduce((a,b)=>a+Number(b.value||0),0)+cash; const debtLeft=debts.reduce((a,b)=>a+Math.max(0,Number(b.total||0)-Number(b.paid||0)),0); const netWorth=assetTotal-debtLeft; const income=splits.reduce((a,b)=>a+Number(b.amount||0),0); const savingRate=income ? Math.round(((splits.flatMap(s=>s.items).filter(i=>String(i.name).includes('เก็บ')||String(i.name).includes('ลงทุน')).reduce((a,b)=>a+Number(b.amount||0),0))/income)*100) : 0; const debtRatio=assetTotal? Math.round((debtLeft/assetTotal)*100):0; const score=Math.max(0,Math.min(100,60+Math.min(20,savingRate)-Math.min(25,Math.round(debtRatio/2))+ (goals.length?5:0)+(budgets.length?5:0))); res.json({accounts,plans,splits,budgets,goals,debts,recurring,assets,summary:{cash,assetTotal,debtLeft,netWorth,income,savingRate,debtRatio,score}}); });
-
-app.post('/api/plans',auth,(req,res)=>{ run('INSERT INTO plans(user_id,name,items) VALUES(?,?,?)',uid(req),req.body.name||'แผนใหม่',JSON.stringify(req.body.items||[])); res.json({ok:true}); });
-app.delete('/api/plans/:id',auth,(req,res)=>{ run('DELETE FROM plans WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
-app.post('/api/accounts',auth,upload.single('qr'),(req,res)=>{ const qr=req.file?('/uploads/'+req.file.filename):null; run('INSERT INTO accounts(user_id,name,type,balance,qr_path) VALUES(?,?,?,?,?)',uid(req),req.body.name,req.body.type||'bank',Number(req.body.balance||0),qr); res.json({ok:true}); });
-app.delete('/api/accounts/:id',auth,(req,res)=>{ run('DELETE FROM accounts WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
-app.post('/api/split',auth,(req,res)=>{ const amount=Number(req.body.amount||0); const items=(req.body.items||[]).map(i=>({...i,amount: Math.round(amount*Number(i.percent||0))/100})); run('INSERT INTO splits(user_id,plan_name,amount,items,status) VALUES(?,?,?,?,?)',uid(req),req.body.planName||'Manual',amount,JSON.stringify(items),'pending'); res.json({ok:true,items}); });
-app.post('/api/splits/:id/done',auth,(req,res)=>{ run('UPDATE splits SET status=? WHERE id=? AND user_id=?','done',req.params.id,uid(req)); res.json({ok:true}); });
-app.delete('/api/splits/:id',auth,(req,res)=>{ run('DELETE FROM splits WHERE id=? AND user_id=?',req.params.id,uid(req)); res.json({ok:true}); });
-for (const [route,table,fields] of [['budgets','budgets',['month','category','limit_amount','spent']],['goals','goals',['name','target','current']],['debts','debts',['name','total','paid','min_payment']],['recurring','recurring',['name','kind','amount','frequency','day']],['assets','assets',['name','kind','value']]]){
- app.post('/api/'+route,auth,(req,res)=>{ const vals=fields.map(f=> req.body[f] ?? (f.includes('amount')||['target','current','total','paid','min_payment','value','spent','day'].includes(f)?0:'')); run(`INSERT INTO ${table}(user_id,${fields.join(',')}) VALUES(?${fields.map(()=>',?').join('')})`,uid(req),...vals); res.json({ok:true}); });
- app.delete('/api/'+route+'/:id',auth,(req,res)=>{ run(`DELETE FROM ${table} WHERE id=? AND user_id=?`,req.params.id,uid(req)); res.json({ok:true}); });
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(DB_FILE)) {
+  fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], sessions: {}, plans: [], accounts: [], splits: [], budgets: [], goals: [], debts: [], recurring: [], assets: [] }, null, 2));
 }
-app.get('/api/backup',auth,(req,res)=>{ const id=uid(req); res.json({accounts:all('SELECT * FROM accounts WHERE user_id=?',id),plans:all('SELECT * FROM plans WHERE user_id=?',id),splits:all('SELECT * FROM splits WHERE user_id=?',id),budgets:all('SELECT * FROM budgets WHERE user_id=?',id),goals:all('SELECT * FROM goals WHERE user_id=?',id),debts:all('SELECT * FROM debts WHERE user_id=?',id),recurring:all('SELECT * FROM recurring WHERE user_id=?',id),assets:all('SELECT * FROM assets WHERE user_id=?',id)}); });
-app.get('/health',(req,res)=>res.json({ok:true}));
-app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-app.listen(PORT,()=>console.log(`MoneyFlow ready on ${PORT}`));
+
+function readDb(){ try { return JSON.parse(fs.readFileSync(DB_FILE,'utf8')); } catch(e){ return { users: [], sessions: {}, plans: [], accounts: [], splits: [], budgets: [], goals: [], debts: [], recurring: [], assets: [] }; } }
+function writeDb(db){ fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
+function id(){ return crypto.randomBytes(12).toString('hex'); }
+function hash(pwd, salt = crypto.randomBytes(16).toString('hex')){ const h = crypto.pbkdf2Sync(String(pwd), salt, 100000, 32, 'sha256').toString('hex'); return salt + ':' + h; }
+function verify(pwd, stored){ const [salt, h] = String(stored||'').split(':'); if(!salt||!h) return false; const chk = crypto.pbkdf2Sync(String(pwd), salt, 100000, 32, 'sha256').toString('hex'); return crypto.timingSafeEqual(Buffer.from(h), Buffer.from(chk)); }
+function sign(val){ return crypto.createHmac('sha256', SECRET).update(val).digest('hex'); }
+function makeCookie(sessionId){ return `mf_session=${sessionId}.${sign(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60*60*24*30}`; }
+function parseCookies(req){ const out={}; (req.headers.cookie||'').split(';').forEach(p=>{ const i=p.indexOf('='); if(i>0) out[p.slice(0,i).trim()]=decodeURIComponent(p.slice(i+1)); }); return out; }
+function getUser(req, db){ const raw=parseCookies(req).mf_session; if(!raw) return null; const [sid,sig]=raw.split('.'); if(!sid||sig!==sign(sid)) return null; const uid=db.sessions[sid]; return db.users.find(u=>u.id===uid)||null; }
+function body(req){ return new Promise((resolve,reject)=>{ let data=''; req.on('data',c=>{ data+=c; if(data.length>2e6){ req.destroy(); reject(new Error('too large')); }}); req.on('end',()=>{ try{ resolve(data?JSON.parse(data):{}); }catch(e){ reject(e); } }); }); }
+function send(res, code, obj, headers={}){ res.writeHead(code, { 'Content-Type':'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(obj)); }
+function staticFile(req,res){ let p = decodeURIComponent(req.url.split('?')[0]); if(p==='/') p='/index.html'; const file = path.normalize(path.join(PUBLIC, p)); if(!file.startsWith(PUBLIC)) { res.writeHead(403); return res.end('Forbidden'); }
+  fs.readFile(file, (err, data)=>{ if(err){ res.writeHead(404); return res.end('Not found'); } const ext=path.extname(file).toLowerCase(); const types={'.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.svg':'image/svg+xml'}; res.writeHead(200, {'Content-Type': types[ext] || 'application/octet-stream'}); res.end(data); });
+}
+function owned(db, table, userId){ return (db[table]||[]).filter(x=>x.userId===userId); }
+
+const server = http.createServer(async (req,res)=>{
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if(url.pathname==='/health') return send(res,200,{ok:true,time:new Date().toISOString()});
+  if(!url.pathname.startsWith('/api/')) return staticFile(req,res);
+  try{
+    const db = readDb();
+    if(req.method==='POST' && url.pathname==='/api/register'){
+      const b=await body(req); const name=String(b.name||'').trim(); const email=String(b.email||'').trim().toLowerCase(); const password=String(b.password||'');
+      if(!name||!email||!password) return send(res,400,{error:'กรอกข้อมูลไม่ครบ'});
+      if(password.length<4) return send(res,400,{error:'รหัสผ่านต้องอย่างน้อย 4 ตัว'});
+      if(db.users.some(u=>u.email===email)) return send(res,400,{error:'อีเมลนี้มีผู้ใช้แล้ว'});
+      const user={id:id(),name,email,passwordHash:hash(password),createdAt:new Date().toISOString()}; db.users.push(user);
+      db.plans.push({id:id(),userId:user.id,name:'แผนหลัก 40/30/20/10',items:[{name:'ลงทุน',percent:40,accountId:''},{name:'หนี้สิน',percent:30,accountId:''},{name:'เงินเก็บ',percent:20,accountId:''},{name:'ฟุ่มเฟือย',percent:10,accountId:''}],createdAt:new Date().toISOString()});
+      const sid=id(); db.sessions[sid]=user.id; writeDb(db); return send(res,200,{ok:true,user:{id:user.id,name:user.name,email:user.email}}, {'Set-Cookie':makeCookie(sid)});
+    }
+    if(req.method==='POST' && url.pathname==='/api/login'){
+      const b=await body(req); const email=String(b.email||'').trim().toLowerCase(); const password=String(b.password||'');
+      const user=db.users.find(u=>u.email===email); if(!user||!verify(password,user.passwordHash)) return send(res,401,{error:'อีเมลหรือรหัสผ่านผิด'});
+      const sid=id(); db.sessions[sid]=user.id; writeDb(db); return send(res,200,{ok:true,user:{id:user.id,name:user.name,email:user.email}}, {'Set-Cookie':makeCookie(sid)});
+    }
+    if(req.method==='POST' && url.pathname==='/api/logout'){ const raw=parseCookies(req).mf_session; if(raw){ const sid=raw.split('.')[0]; delete db.sessions[sid]; writeDb(db);} return send(res,200,{ok:true},{'Set-Cookie':'mf_session=; Path=/; Max-Age=0'}); }
+    const user=getUser(req,db); if(!user) return send(res,401,{error:'not authenticated'});
+    if(req.method==='GET' && url.pathname==='/api/me') return send(res,200,{user:{id:user.id,name:user.name,email:user.email}});
+    if(req.method==='GET' && url.pathname==='/api/state'){
+      return send(res,200,{user:{id:user.id,name:user.name,email:user.email}, plans:owned(db,'plans',user.id), accounts:owned(db,'accounts',user.id), splits:owned(db,'splits',user.id), budgets:owned(db,'budgets',user.id), goals:owned(db,'goals',user.id), debts:owned(db,'debts',user.id), recurring:owned(db,'recurring',user.id), assets:owned(db,'assets',user.id)});
+    }
+    const map={plans:'plans',accounts:'accounts',splits:'splits',budgets:'budgets',goals:'goals',debts:'debts',recurring:'recurring',assets:'assets'};
+    const table=url.pathname.split('/')[2];
+    if(map[table]){
+      if(req.method==='POST') { const b=await body(req); const item={...b,id:id(),userId:user.id,createdAt:new Date().toISOString()}; db[table].push(item); writeDb(db); return send(res,200,{ok:true,item}); }
+      if(req.method==='PUT') { const b=await body(req); const item=(db[table]||[]).find(x=>x.id===b.id&&x.userId===user.id); if(!item) return send(res,404,{error:'not found'}); Object.assign(item,b,{userId:user.id}); writeDb(db); return send(res,200,{ok:true,item}); }
+      if(req.method==='DELETE') { const b=await body(req); const before=db[table].length; db[table]=db[table].filter(x=>!(x.id===b.id&&x.userId===user.id)); writeDb(db); return send(res,200,{ok:true,deleted:before-db[table].length}); }
+    }
+    if(req.method==='GET' && url.pathname==='/api/backup') return send(res,200,{exportedAt:new Date().toISOString(), data:{plans:owned(db,'plans',user.id),accounts:owned(db,'accounts',user.id),splits:owned(db,'splits',user.id),budgets:owned(db,'budgets',user.id),goals:owned(db,'goals',user.id),debts:owned(db,'debts',user.id),recurring:owned(db,'recurring',user.id),assets:owned(db,'assets',user.id)}});
+    send(res,404,{error:'not found'});
+  }catch(e){ console.error(e); send(res,500,{error:e.message||'server error'}); }
+});
+server.listen(PORT, ()=>console.log(`MoneyFlow running on ${PORT}`));
